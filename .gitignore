@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+*.log
+data/captures/*
+!data/captures/.gitkeep
+data/logs/*
+!data/logs/.gitkeep
+backups/
+*.deb
+*.tar.gz
+.DS_Store

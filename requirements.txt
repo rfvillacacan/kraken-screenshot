@@ -1,0 +1,7 @@
+# System packages used (Debian/Ubuntu):
+#   python3-pyqt5
+#   flameshot   (recommended capture backend)
+#   scrot       (fallback)
+# Optional:
+#   wl-clipboard  (wl-copy for Wayland clipboard)
+#   xclip         (X11 clipboard)
