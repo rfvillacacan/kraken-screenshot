@@ -21,12 +21,13 @@ from screenshot_tool.ui.zoom_preview import EnlargedPreview
 
 
 class ShotRow(QWidget):
-    """One queue row: thumb + title + Insert / Copy / Save / Path."""
+    """One queue row: thumb + title + Insert / Copy / Save / Path / Remove."""
 
     insert_clicked = pyqtSignal(str)
     copy_clicked = pyqtSignal(str)
     copy_path_clicked = pyqtSignal(str)
     save_clicked = pyqtSignal(str)
+    remove_clicked = pyqtSignal(str)
     row_pressed = pyqtSignal(str)
     hover_entered = pyqtSignal(str)
     hover_left = pyqtSignal(str)
@@ -42,10 +43,10 @@ class ShotRow(QWidget):
         layout.setSpacing(4)
 
         thumb = QLabel()
-        thumb.setFixedSize(48, 36)
+        thumb.setFixedSize(44, 34)
         thumb.setAlignment(Qt.AlignCenter)
         thumb.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        pix = shot.pixmap.scaled(48, 36, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        pix = shot.pixmap.scaled(44, 34, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         thumb.setPixmap(pix)
         layout.addWidget(thumb)
 
@@ -56,20 +57,20 @@ class ShotRow(QWidget):
 
         btns = QHBoxLayout()
         btns.setContentsMargins(0, 0, 0, 0)
-        btns.setSpacing(3)
+        btns.setSpacing(2)
 
         for text, width, tip, slot in (
-            ("Insert", 54, "Paste this image into the last focused app (Ctrl+V only)", self._on_insert),
-            ("Copy", 48, "Copy this image to the clipboard", self._on_copy),
-            ("Save", 48, "Save this image to a file", self._on_save),
-            ("Path", 44, "Copy this image’s cached file path", self._on_copy_path),
+            ("Insert", 50, "Paste this image into the last focused app (Ctrl+V only)", self._on_insert),
+            ("Copy", 44, "Copy IMAGE to clipboard (not the file path)", self._on_copy),
+            ("Save", 44, "Save this image to a file", self._on_save),
+            ("Path", 40, "Copy absolute file path as text", self._on_copy_path),
+            ("Remove", 56, "Remove this screenshot from the queue", self._on_remove),
         ):
             btn = QPushButton(text)
             btn.setObjectName("rowAction")
             btn.setFixedWidth(width)
             btn.setToolTip(tip)
             btn.clicked.connect(slot)
-            # Buttons still count as “over this row” for zoom
             btn.installEventFilter(self)
             btns.addWidget(btn)
 
@@ -91,6 +92,10 @@ class ShotRow(QWidget):
         self.row_pressed.emit(self.shot_id)
         self.copy_path_clicked.emit(self.shot_id)
 
+    def _on_remove(self) -> None:
+        self.row_pressed.emit(self.shot_id)
+        self.remove_clicked.emit(self.shot_id)
+
     def enterEvent(self, event) -> None:  # noqa: N802
         self.hover_entered.emit(self.shot_id)
         super().enterEvent(event)
@@ -100,12 +105,10 @@ class ShotRow(QWidget):
         super().leaveEvent(event)
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
-        # Keep zoom alive while the pointer is over row action buttons
         et = event.type()
         if et == QEvent.Enter:
             self.hover_entered.emit(self.shot_id)
         elif et == QEvent.Leave:
-            # Only signal leave if cursor left the whole row
             QTimer.singleShot(0, self._emit_leave_if_outside)
         return False
 
@@ -125,7 +128,7 @@ class QueuePanel(QWidget):
     copy_path_clicked = pyqtSignal(str)
     insert_clicked = pyqtSignal(str)
     insert_all_clicked = pyqtSignal()
-    remove_clicked = pyqtSignal()
+    remove_clicked = pyqtSignal(str)  # shot id
     save_clicked = pyqtSignal(str)
     save_all_clicked = pyqtSignal()
     clear_clicked = pyqtSignal()
@@ -135,7 +138,7 @@ class QueuePanel(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setObjectName("queuePanel")
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(460)
         self.setMinimumHeight(420)
         self._queue_ref: Optional[ShotQueue] = None
         self._zoom_popup = EnlargedPreview()
@@ -167,7 +170,7 @@ class QueuePanel(QWidget):
         root.addWidget(header)
 
         hint = QLabel(
-            "Hover row to zoom · Per-row Insert/Copy/Save/Path · Click target before Insert"
+            "Hover to zoom · Row: Insert / Copy(image) / Save / Path / Remove"
         )
         hint.setObjectName("hint")
         hint.setWordWrap(True)
@@ -188,13 +191,6 @@ class QueuePanel(QWidget):
         )
         self.insert_all_btn.clicked.connect(self.insert_all_clicked.emit)
         root.addWidget(self.insert_all_btn)
-
-        extras = QHBoxLayout()
-        self.remove_btn = QPushButton("Remove")
-        self.remove_btn.setToolTip("Remove selected screenshot from the queue")
-        self.remove_btn.clicked.connect(self.remove_clicked.emit)
-        extras.addWidget(self.remove_btn)
-        root.addLayout(extras)
 
         batch = QHBoxLayout()
         self.save_all_btn = QPushButton("Save All")
@@ -248,8 +244,8 @@ class QueuePanel(QWidget):
                 color: #17353a;
             }
             QPushButton#rowAction {
-                padding: 4px 4px;
-                font-size: 11px;
+                padding: 4px 2px;
+                font-size: 10px;
                 border-radius: 6px;
             }
             QPushButton:hover:!disabled { background: #dce6e1; }
@@ -289,7 +285,6 @@ class QueuePanel(QWidget):
         self._zoom_hide_timer.start()
 
     def _hide_zoom_if_idle(self) -> None:
-        # Still over the list? keep or switch — don’t flicker on brief leaves
         pos = self.list.viewport().mapFromGlobal(QCursor.pos())
         if self.list.viewport().rect().contains(pos):
             item = self.list.itemAt(pos)
@@ -317,7 +312,7 @@ class QueuePanel(QWidget):
         self._zoom_popup.hide()
 
     def update_action_states(self, *, has_selection: bool, has_shots: bool) -> None:
-        self.remove_btn.setEnabled(has_selection)
+        del has_selection  # per-row Remove; selection only for highlight
         self.save_all_btn.setEnabled(has_shots)
         self.clear_btn.setEnabled(has_shots)
         self.insert_all_btn.setEnabled(has_shots)
@@ -336,6 +331,7 @@ class QueuePanel(QWidget):
             row.copy_clicked.connect(self.copy_clicked.emit)
             row.copy_path_clicked.connect(self.copy_path_clicked.emit)
             row.save_clicked.connect(self.save_clicked.emit)
+            row.remove_clicked.connect(self.remove_clicked.emit)
             row.row_pressed.connect(self._select_shot)
             row.hover_entered.connect(self._on_row_hover_enter)
             row.hover_left.connect(self._on_row_hover_leave)

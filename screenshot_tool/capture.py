@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from PyQt5.QtCore import QByteArray, QMimeData
 from PyQt5.QtGui import QGuiApplication, QPixmap
@@ -19,6 +21,9 @@ from screenshot_tool.logging_setup import get_logger
 log = get_logger("capture")
 
 _TOOLS_DIR = Path(__file__).resolve().parent.parent / "tools"
+_CLIP_HELPER_NAMES = ("wl-copy", "xclip", "wl-paste")
+# PIDs of clipboard servers we spawned and left running (serve until replaced).
+_live_clip_pids: Set[int] = set()
 
 
 def _tool(name: str) -> Optional[str]:
@@ -179,6 +184,79 @@ def capture_region_interactive() -> Optional[QPixmap]:
         return _load_png(out)
 
 
+def _iter_our_clipboard_pids() -> List[int]:
+    """PIDs whose cmdline is our project tools/ wl-copy|xclip|wl-paste."""
+    tools = str(_TOOLS_DIR.resolve())
+    pids: List[int] = []
+    try:
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                raw = (entry / "cmdline").read_bytes()
+            except (OSError, PermissionError):
+                continue
+            if not raw:
+                continue
+            cmdline = raw.replace(b"\0", b" ").decode(errors="ignore")
+            if tools not in cmdline:
+                continue
+            if any(name in cmdline for name in _CLIP_HELPER_NAMES):
+                pids.append(int(entry.name))
+    except OSError:
+        pass
+    return pids
+
+
+def _kill_clipboard_helpers() -> None:
+    """Terminate prior wl-copy/xclip servers so Path/Copy do not stack processes."""
+    pids = set(_iter_our_clipboard_pids()) | set(_live_clip_pids)
+    _live_clip_pids.clear()
+    if not pids:
+        return
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    deadline = time.monotonic() + 0.3
+    while time.monotonic() < deadline:
+        alive = [p for p in pids if Path(f"/proc/{p}").exists()]
+        if not alive:
+            break
+        time.sleep(0.02)
+    for pid in pids:
+        if not Path(f"/proc/{pid}").exists():
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    leftover = [p for p in pids if Path(f"/proc/{p}").exists()]
+    if leftover:
+        log.debug("clipboard helpers still alive after kill: %s", leftover)
+    else:
+        log.debug("cleared %s clipboard helper(s)", len(pids))
+
+
+def _wl_clear() -> None:
+    """Drop previous clipboard offers so image/text do not linger across Copy/Path."""
+    _kill_clipboard_helpers()
+    wl_copy = _tool("wl-copy")
+    if not wl_copy:
+        return
+    try:
+        subprocess.run(
+            [wl_copy, "--clear"],
+            check=False,
+            timeout=1.0,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        log.debug("wl-copy --clear skipped: %s", exc)
+
+
 def _pipe_to_clipboard_cmd(cmd: List[str], data: bytes, *, timeout: float = 1.0) -> bool:
     """Feed stdin to a clipboard helper.
 
@@ -199,17 +277,24 @@ def _pipe_to_clipboard_cmd(cmd: List[str], data: bytes, *, timeout: float = 1.0)
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            # Still serving clipboard data — treat as success
-            log.debug("%s still running (clipboard server)", cmd[0])
+            # Still serving clipboard data — keep one tracked PID, treat as success
+            _live_clip_pids.add(proc.pid)
+            log.debug("%s still running (clipboard server pid=%s)", cmd[0], proc.pid)
             return True
-        return proc.returncode == 0
+        if proc.returncode == 0:
+            return True
+        return False
     except Exception as exc:
         log.debug("clipboard cmd failed %s: %s", cmd, exc)
         return False
 
 
 def copy_pixmap_to_clipboard(pixmap: QPixmap) -> None:
-    """Copy image for Wayland (wl-copy) and/or X11 (xclip), plus Qt mime."""
+    """Copy image for Wayland (wl-copy) and/or X11 (xclip), plus Qt mime.
+
+    Clears prior clipboard content first so a previous Path (text) cannot
+    be what Ctrl+V pastes after Copy.
+    """
     if pixmap.isNull():
         raise RuntimeError("Nothing to copy")
 
@@ -230,10 +315,15 @@ def copy_pixmap_to_clipboard(pixmap: QPixmap) -> None:
             len(png_bytes),
         )
 
+        _wl_clear()
+        # Clear Qt clipboard text residue
+        QApplication.clipboard().clear()
+        app.processEvents()
+
         wayland = bool(os.environ.get("WAYLAND_DISPLAY"))
         ok = False
 
-        # Wayland: wl-copy is authoritative. Skip Qt/xclip ownership fights.
+        # Wayland: wl-copy is authoritative for image/png only
         wl_copy = _tool("wl-copy")
         if wayland and wl_copy:
             if _pipe_to_clipboard_cmd(
@@ -242,15 +332,14 @@ def copy_pixmap_to_clipboard(pixmap: QPixmap) -> None:
                 log.debug("wl-copy OK")
                 ok = True
 
-        # Qt mime (helps some X11 / in-process consumers)
-        if not (wayland and ok):
-            mime = QMimeData()
-            mime.setData("image/png", QByteArray(png_bytes))
-            mime.setImageData(pixmap.toImage())
-            QApplication.clipboard().setMimeData(mime)
-            app.processEvents()
+        # Always set Qt image mime as well (helps some paste targets)
+        mime = QMimeData()
+        mime.setData("image/png", QByteArray(png_bytes))
+        mime.setImageData(pixmap.toImage())
+        QApplication.clipboard().setMimeData(mime)
+        app.processEvents()
 
-        # X11 / XWayland: xclip when not already served by wl-copy
+        # X11 / XWayland mirror when needed
         if not ok:
             xclip = _tool("xclip")
             if xclip and _pipe_to_clipboard_cmd(
@@ -267,7 +356,6 @@ def copy_pixmap_to_clipboard(pixmap: QPixmap) -> None:
                 ok = True
 
         if not ok:
-            # Last resort: GTK helper
             try:
                 helper = (
                     Path(__file__).resolve().parent.parent
@@ -295,7 +383,7 @@ def copy_pixmap_to_clipboard(pixmap: QPixmap) -> None:
 
 
 def copy_text_to_clipboard(text: str) -> None:
-    """Copy plain text for Wayland + X11 paste targets."""
+    """Copy plain text for Wayland + X11 paste targets (Path, etc.)."""
     if not text:
         raise RuntimeError("Nothing to copy")
 
@@ -303,21 +391,41 @@ def copy_text_to_clipboard(text: str) -> None:
     if app is None:
         raise RuntimeError("QApplication required for clipboard")
 
-    log.info("Copy text (%s chars)", len(text))
-    wayland = bool(os.environ.get("WAYLAND_DISPLAY"))
+    log.info("Copy text (%s chars): %s", len(text), text[:120])
     data = text.encode()
 
+    _wl_clear()
+    QApplication.clipboard().clear()
+    app.processEvents()
+
+    # Qt text always (local paste targets + fallback)
+    QApplication.clipboard().setText(text)
+    app.processEvents()
+
+    wayland = bool(os.environ.get("WAYLAND_DISPLAY"))
     wl_copy = _tool("wl-copy")
+    xclip = _tool("xclip")
+    ok = False
+
+    # One lasting clipboard server only — Path used to spawn both and stack them.
     if wayland and wl_copy:
-        _pipe_to_clipboard_cmd([wl_copy, "--type", "text/plain"], data)
+        ok = _pipe_to_clipboard_cmd([wl_copy, "--type", "text/plain"], data, timeout=0.4)
+        if ok:
+            log.debug("wl-copy text OK")
+    if not ok and xclip:
+        ok = _pipe_to_clipboard_cmd(
+            [xclip, "-selection", "clipboard", "-t", "text/plain"],
+            data,
+            timeout=0.4,
+        )
+        if ok:
+            log.debug("xclip text OK")
+    if not ok and wl_copy:
+        ok = _pipe_to_clipboard_cmd([wl_copy, "--type", "text/plain"], data, timeout=0.4)
+        if ok:
+            log.debug("wl-copy text OK (fallback)")
+
+    if not ok:
+        log.warning("Native text clipboard helpers failed; Qt text only")
     else:
-        QApplication.clipboard().setText(text)
-        app.processEvents()
-        if wl_copy:
-            _pipe_to_clipboard_cmd([wl_copy, "--type", "text/plain"], data)
-        xclip = _tool("xclip")
-        if xclip:
-            _pipe_to_clipboard_cmd(
-                [xclip, "-selection", "clipboard", "-t", "text/plain"], data
-            )
-    log.info("Copy text OK")
+        log.info("Copy text OK")

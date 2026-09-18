@@ -162,7 +162,7 @@ class MainShell(DraggableWindowMixin, QWidget):
         qw = max(
             self.queue.sizeHint().width(),
             self.queue.minimumWidth(),
-            400,
+            460,
         )
         return cw + qw
 
@@ -262,7 +262,7 @@ class MainShell(DraggableWindowMixin, QWidget):
             self.queue.setMaximumWidth(0)
         else:
             self.queue.setMaximumWidth(16777215)
-            self.queue.setMinimumWidth(400)
+            self.queue.setMinimumWidth(460)
         self.controls.set_queue_open(self._drawer_visible)
         self._apply_drawer_side()
 
@@ -305,8 +305,8 @@ class MainShell(DraggableWindowMixin, QWidget):
             )
             if screen is not None:
                 sg = screen.availableGeometry()
-                need = self.controls.sizeHint().width() + 420 + 8
-                if self.x() + need > sg.right() - 8 and self.x() - 420 > sg.left() + 8:
+                need = self.controls.sizeHint().width() + 460 + 8
+                if self.x() + need > sg.right() - 8 and self.x() - 460 > sg.left() + 8:
                     on_right = False
 
         self._drawer_on_right = on_right

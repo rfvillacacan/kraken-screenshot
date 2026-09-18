@@ -82,7 +82,7 @@ class ScreenshotApp:
         self.queue_panel.copy_path_clicked.connect(self.copy_path_shot)
         self.queue_panel.insert_clicked.connect(self.insert_shot)
         self.queue_panel.insert_all_clicked.connect(self.insert_all)
-        self.queue_panel.remove_clicked.connect(self.delete_selected)
+        self.queue_panel.remove_clicked.connect(self.remove_shot)
         self.queue_panel.save_clicked.connect(self.save_shot)
         self.queue_panel.save_all_clicked.connect(self.save_all_zip)
         self.queue_panel.clear_clicked.connect(self.clear_queue)
@@ -495,14 +495,22 @@ class ScreenshotApp:
                     )
                 return
             shot.path = path
+        abs_path = str(path.resolve())
+        if not path.exists():
+            with self._dialog_mode():
+                QMessageBox.warning(
+                    None, "Copy Path failed", f"File missing:\n{abs_path}"
+                )
+            return
         try:
-            copy_text_to_clipboard(str(path.resolve()))
+            log.info("Copy path id=%s → %s", shot.id, abs_path)
+            copy_text_to_clipboard(abs_path)
             if self.tray is not None:
                 self.tray.showMessage(
                     APP_NAME,
-                    "Path copied to clipboard",
+                    f"Path copied:\n{abs_path}",
                     QSystemTrayIcon.Information,
-                    1500,
+                    2500,
                 )
         except Exception as exc:
             with self._dialog_mode():
@@ -665,11 +673,17 @@ class ScreenshotApp:
 
     def delete_selected(self) -> None:
         sid = self.queue_panel.selected_id() or self.selected_id
-        self.selected_id = sid
         if not sid:
             return
-        self.queue.remove(sid)
-        self.selected_id = None
+        self.remove_shot(sid)
+
+    def remove_shot(self, shot_id: str) -> None:
+        if not shot_id or self.queue.get(shot_id) is None:
+            return
+        log.info("Remove shot id=%s", shot_id)
+        self.queue.remove(shot_id)
+        if self.selected_id == shot_id:
+            self.selected_id = None
         self.refresh_queue()
 
     def clear_queue(self) -> None:
