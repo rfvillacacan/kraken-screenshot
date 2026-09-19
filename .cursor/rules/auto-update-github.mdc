@@ -1,0 +1,17 @@
+---
+description: After every completed change set, commit and push to GitHub
+alwaysApply: true
+---
+
+# Auto-update GitHub on completion
+
+Whenever a change set for this project is **finished** (feature, fix, docs, or planned PROCEED work), automatically update the GitHub remote without waiting to be asked:
+
+1. Follow the project's **backup-first** policy before edits when making code changes.
+2. When the work is complete, run the standard git commit flow (status, diff, log; stage relevant files; commit with a clear message; verify status).
+3. **Push** to `origin` on the current branch (`git push -u origin HEAD` if needed).
+4. Do **not** commit secrets, `.env`, credentials, `backups/`, capture PNGs, or log files (respect `.gitignore`).
+5. Do **not** force-push to `main`/`master` unless the user explicitly requests it.
+6. After push, briefly confirm with the commit hash and repo URL.
+
+Remote: `https://github.com/rfvillacacan/kraken-screenshot.git`

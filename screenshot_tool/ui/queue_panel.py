@@ -35,20 +35,24 @@ class ShotRow(QWidget):
     def __init__(self, shot: Shot, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.shot_id = shot.id
-        self.setAttribute(Qt.WA_Hover, True)
-        self.setMouseTracking(True)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 2, 4, 2)
         layout.setSpacing(4)
 
-        thumb = QLabel()
-        thumb.setFixedSize(44, 34)
-        thumb.setAlignment(Qt.AlignCenter)
-        thumb.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        # Zoom is thumbnail-only — title/buttons must not trigger the popup.
+        self._thumb = QLabel()
+        self._thumb.setObjectName("shotThumb")
+        self._thumb.setFixedSize(44, 34)
+        self._thumb.setAlignment(Qt.AlignCenter)
+        self._thumb.setAttribute(Qt.WA_Hover, True)
+        self._thumb.setMouseTracking(True)
+        self._thumb.setCursor(Qt.PointingHandCursor)
+        self._thumb.setToolTip("Hover to enlarge")
         pix = shot.pixmap.scaled(44, 34, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        thumb.setPixmap(pix)
-        layout.addWidget(thumb)
+        self._thumb.setPixmap(pix)
+        self._thumb.installEventFilter(self)
+        layout.addWidget(self._thumb)
 
         title = QLabel(shot.title)
         title.setWordWrap(True)
@@ -71,10 +75,14 @@ class ShotRow(QWidget):
             btn.setFixedWidth(width)
             btn.setToolTip(tip)
             btn.clicked.connect(slot)
-            btn.installEventFilter(self)
             btns.addWidget(btn)
 
         layout.addLayout(btns)
+
+    def thumb_contains_cursor(self) -> bool:
+        """True when the global cursor is over this row's thumbnail."""
+        local = self._thumb.mapFromGlobal(QCursor.pos())
+        return self._thumb.rect().contains(local)
 
     def _on_insert(self) -> None:
         self.row_pressed.emit(self.shot_id)
@@ -96,25 +104,14 @@ class ShotRow(QWidget):
         self.row_pressed.emit(self.shot_id)
         self.remove_clicked.emit(self.shot_id)
 
-    def enterEvent(self, event) -> None:  # noqa: N802
-        self.hover_entered.emit(self.shot_id)
-        super().enterEvent(event)
-
-    def leaveEvent(self, event) -> None:  # noqa: N802
-        self.hover_left.emit(self.shot_id)
-        super().leaveEvent(event)
-
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
-        et = event.type()
-        if et == QEvent.Enter:
-            self.hover_entered.emit(self.shot_id)
-        elif et == QEvent.Leave:
-            QTimer.singleShot(0, self._emit_leave_if_outside)
+        if obj is self._thumb:
+            et = event.type()
+            if et == QEvent.Enter:
+                self.hover_entered.emit(self.shot_id)
+            elif et == QEvent.Leave:
+                self.hover_left.emit(self.shot_id)
         return False
-
-    def _emit_leave_if_outside(self) -> None:
-        if not self.rect().contains(self.mapFromGlobal(QCursor.pos())):
-            self.hover_left.emit(self.shot_id)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         self.row_pressed.emit(self.shot_id)
@@ -170,7 +167,7 @@ class QueuePanel(QWidget):
         root.addWidget(header)
 
         hint = QLabel(
-            "Hover to zoom · Row: Insert / Copy(image) / Save / Path / Remove"
+            "Hover thumbnail to zoom · Row: Insert / Copy(image) / Save / Path / Remove"
         )
         hint.setObjectName("hint")
         hint.setWordWrap(True)
@@ -236,6 +233,11 @@ class QueuePanel(QWidget):
             QListWidget::item:hover {
                 background: #e7f2f1;
             }
+            #shotThumb {
+                background: #f0f4f2;
+                border: 1px solid #c5cfca;
+                border-radius: 4px;
+            }
             QPushButton {
                 background: #e8eeeb;
                 border: 1px solid #c5cfca;
@@ -285,15 +287,20 @@ class QueuePanel(QWidget):
         self._zoom_hide_timer.start()
 
     def _hide_zoom_if_idle(self) -> None:
-        pos = self.list.viewport().mapFromGlobal(QCursor.pos())
-        if self.list.viewport().rect().contains(pos):
-            item = self.list.itemAt(pos)
-            if item is not None:
-                shot_id = item.data(Qt.UserRole)
-                if shot_id:
-                    self._hover_shot_id = shot_id
-                    self._show_zoom(shot_id)
-                    return
+        # Keep or switch zoom only while the cursor is over a thumbnail
+        # (not title/buttons — that used to re-open zoom and block clicks).
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            if item is None:
+                continue
+            row = self.list.itemWidget(item)
+            if not isinstance(row, ShotRow) or not row.thumb_contains_cursor():
+                continue
+            shot_id = item.data(Qt.UserRole)
+            if shot_id:
+                self._hover_shot_id = shot_id
+                self._show_zoom(shot_id)
+                return
         self._hover_shot_id = None
         self._zoom_popup.hide()
 

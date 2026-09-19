@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
 
 
 class EnlargedPreview(QFrame):
-    """Larger box showing a screenshot while hovering a queue item."""
+    """Larger box showing a screenshot while hovering a queue thumbnail."""
 
     def __init__(self) -> None:
         super().__init__(None)
